@@ -3,6 +3,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"io/ioutil"
 	"os"
 	"strings"
 	"sync"
@@ -10,11 +11,11 @@ import (
 	"github.com/360EntSecGroup-Skylar/excelize"
 )
 
-func usage() {
-	fmt.Fprintf(os.Stderr, "usage: excel2lua [inputfile]\n")
-	flag.PrintDefaults()
-	os.Exit(2)
-}
+// func usage() {
+// 	fmt.Fprintf(os.Stderr, "usage: excel2lua [inputfile]\n")
+// 	flag.PrintDefaults()
+// 	os.Exit(2)
+// }
 
 func assert(cond bool, errmsg string) {
 	if !cond {
@@ -26,7 +27,7 @@ type field struct {
 	_index int
 	_name  string
 	_type  string // bool,int,string,array,dict,comment
-	_attr  string
+	_attr  string // nil,unique,client,server
 }
 
 func parseFields(fieldsName []string, fieldsDesc []string) []*field {
@@ -58,7 +59,7 @@ func getDefaultValue(_type string) string {
 	case "int":
 		return "0"
 	case "string":
-		return "\"\""
+		return ""
 	case "array":
 		return ""
 	case "dict":
@@ -76,7 +77,12 @@ func cellWrapper(f *field, cell string) string {
 	var value string
 	switch f._type {
 	case "bool":
-		value = strings.ToLower(cell)
+		if cell == "1" {
+			value = "true"
+		} else {
+			value = "false"
+		}
+		// value = strings.ToLower(cell)
 	case "int":
 		value = cell
 	case "string":
@@ -110,7 +116,7 @@ func cellWrapper(f *field, cell string) string {
 	return fmt.Sprintf("--[[%s]]%v,", f._name, value)
 }
 
-func processSheet(xlsx *excelize.File, sheetName string, wg *sync.WaitGroup) {
+func processSheet(xlsx *excelize.File, fileName string, sheetName string, wg *sync.WaitGroup, isClient bool, outputPath string) {
 	defer wg.Done()
 	fmt.Println("Process sheet", sheetName)
 	rows, err := xlsx.GetRows(sheetName)
@@ -122,7 +128,19 @@ func processSheet(xlsx *excelize.File, sheetName string, wg *sync.WaitGroup) {
 		fmt.Printf("invalid header")
 		return
 	}
-	luaCode := "return {\n"
+	// luaCode := "return {\n"
+
+	sheetNameUpper := strings.ToUpper(sheetName)
+	luaCode := fmt.Sprintf(`--[[
+* @file        : %s.lua
+* @author      : Steve_Lhf
+* @sour        : excel/%s
+* @sheet name  : %s
+* brief:       : this file was create by tools, DO NOT modify it!
+* Copyright(C) 2017 ONEMT, All rights reserved
+--]]`, sheetName, fileName, sheetName)
+	luaCode += fmt.Sprintf("\n\nlocal %s =\n{\n", sheetNameUpper)
+
 	fields := parseFields(rows[0], rows[1])
 	fmt.Printf("fields:%v\n", fields)
 
@@ -132,7 +150,7 @@ func processSheet(xlsx *excelize.File, sheetName string, wg *sync.WaitGroup) {
 		if rowIndex < 3 {
 			continue
 		}
-		// line := fmt.Sprintf("  --[[%d]]{", rowIndex-2)
+		// line := fmt.Sprintf("   {", rowIndex-2)
 		line := "  {"
 		for colIndex, colCell := range row {
 			fmt.Println("col:", colIndex, colCell)
@@ -141,35 +159,41 @@ func processSheet(xlsx *excelize.File, sheetName string, wg *sync.WaitGroup) {
 			if f._type == "comment" {
 				continue // skip comment
 			}
+			if (isClient && f._attr == "server") || (!isClient && f._attr == "client") {
+				continue
+			}
 			line += cellWrapper(f, colCell)
 		}
 		line += "},\n"
 		luaCode += line
 	}
-	luaCode += "}\n\n"
-	fmt.Println(sheetName, luaCode)
+	// luaCode += "}\n"
+	luaCode += fmt.Sprintf("};\nreturn %s\n", strings.ToUpper(sheetName))
+	ioutil.WriteFile("output/"+sheetName+".lua", []byte(luaCode), 0644)
 }
 
 func main() {
-	flag.Usage = usage
+	// flag.Usage = usage
+	isClient := flag.Bool("client", true, "true=>client, false=>server")
+	outputPath := flag.String("output", "output/", "The path you want to output.")
+	intputFile := flag.String("input", "input.xlsx", "The xlsx file you want to convert.")
 	flag.Parse()
 
-	args := flag.Args()
-	if len(args) < 1 {
+	if len(*intputFile) == 0 {
 		fmt.Println("Input file is missing.")
 		os.Exit(1)
 	}
 
-	xlsx, err := excelize.OpenFile(args[0])
+	xlsx, err := excelize.OpenFile(*intputFile)
 	if err != nil {
 		fmt.Println(err)
 		return
 	}
 	// Get all sheets
 	var wg sync.WaitGroup
-	for _, name := range xlsx.GetSheetMap() {
+	for _, sheetName := range xlsx.GetSheetMap() {
 		wg.Add(1)
-		go processSheet(xlsx, name, &wg)
+		go processSheet(xlsx, *intputFile, sheetName, &wg, *isClient, *outputPath)
 	}
 	wg.Wait()
 }
