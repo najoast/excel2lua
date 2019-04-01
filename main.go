@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync"
 
 	"github.com/360EntSecGroup-Skylar/excelize"
 )
@@ -109,7 +110,8 @@ func cellWrapper(f *field, cell string) string {
 	return fmt.Sprintf("--[[%s]]%v,", f._name, value)
 }
 
-func processSheet(xlsx *excelize.File, sheetName string) {
+func processSheet(xlsx *excelize.File, sheetName string, wg *sync.WaitGroup) {
+	defer wg.Done()
 	fmt.Println("Process sheet", sheetName)
 	rows, err := xlsx.GetRows(sheetName)
 	if err != nil {
@@ -164,7 +166,10 @@ func main() {
 		return
 	}
 	// Get all sheets
+	var wg sync.WaitGroup
 	for _, name := range xlsx.GetSheetMap() {
-		processSheet(xlsx, name)
+		wg.Add(1)
+		go processSheet(xlsx, name, &wg)
 	}
+	wg.Wait()
 }
